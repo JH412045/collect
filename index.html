@@ -1,12 +1,537 @@
-rules_version = '2';
-service cloud.firestore {
-match /databases/{database}/documents {
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>我的專屬收藏庫 (雲端版)</title>
+    <!-- 使用 Tailwind CSS 進行排版 -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- 引入 FontAwesome 圖示 -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        .flip-card { perspective: 1000px; cursor: pointer; }
+        .flip-card-inner {
+            position: relative; width: 100%; height: 100%;
+            transition: transform 0.6s cubic-bezier(0.4, 0.2, 0.2, 1);
+            transform-style: preserve-3d;
+        }
+        .flip-card.flipped .flip-card-inner { transform: rotateY(180deg); }
+        .flip-card-front, .flip-card-back {
+            position: absolute; width: 100%; height: 100%;
+            -webkit-backface-visibility: hidden; backface-visibility: hidden;
+            border-radius: 0.75rem;
+            box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1), 0 2px 4px -1px rgba(0,0,0,0.06);
+            overflow: hidden;
+        }
+        .flip-card-front { background-color: #f3f4f6; }
+        .flip-card-front img { width: 100%; height: 100%; object-fit: cover; }
+        .flip-card-back {
+            background-color: #ffffff; transform: rotateY(180deg);
+            padding: 1.25rem; display: flex; flex-direction: column;
+            border: 1px solid #e5e7eb;
+        }
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+    </style>
+</head>
+<body class="bg-gray-50 text-gray-800 font-sans min-h-screen">
 
-// 將使用者的資料存放於 /users/{userId}/items/{itemId} 的路徑下
-match /users/{userId}/items/{itemId} {
-  // 安全規則：只有當使用者已經登入 (request.auth != null)，
-  // 且該使用者的 UID 與目錄的 userId 相符時，才允許讀取與寫入資料。
-  allow read, write: if request.auth != null && request.auth.uid == userId;
-         }
-       }
-    }
+    <!-- 頂部導航列與控制區 -->
+    <header class="bg-white shadow-sm sticky top-0 z-10 px-4 py-4 md:px-8">
+        <div class="max-w-6xl mx-auto flex flex-col md:flex-row justify-between items-center gap-4">
+            <h1 class="text-2xl font-bold text-gray-900 tracking-wide">
+                <i class="fa-solid fa-box-open mr-2 text-indigo-600"></i>我的專屬收藏庫
+            </h1>
+            
+            <div class="flex items-center w-full md:w-auto gap-4 justify-between md:justify-end">
+                <!-- 搜尋與新增按鈕 (登入後顯示) -->
+                <div id="appControls" class="hidden flex-grow md:flex-grow-0 flex items-center gap-2">
+                    <div class="relative w-full md:w-48 lg:w-64">
+                        <input type="text" id="searchInput" placeholder="搜尋名稱或品牌..." 
+                            class="w-full pl-9 pr-3 py-2 text-sm border border-gray-300 rounded-full focus:outline-none focus:ring-2 focus:ring-indigo-500 transition">
+                        <i class="fa-solid fa-search absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400"></i>
+                    </div>
+                    <button onclick="openModal()" class="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-full flex items-center gap-2 transition whitespace-nowrap shadow-sm text-sm">
+                        <i class="fa-solid fa-plus"></i> <span class="hidden sm:inline">新增</span>
+                    </button>
+                </div>
+                
+                <!-- 帳號登入/登出區塊 -->
+                <div class="flex items-center gap-2 border-l pl-4 md:border-l-0 md:pl-0 border-gray-200">
+                    <button id="loginBtn" onclick="login()" class="flex items-center gap-2 px-4 py-2 bg-white border border-gray-300 rounded-full hover:bg-gray-50 transition text-sm font-medium">
+                        <img src="https://www.svgrepo.com/show/475656/google-color.svg" class="w-4 h-4" alt="Google"> 登入
+                    </button>
+                    <div id="userInfo" class="hidden flex items-center gap-2">
+                        <img id="userAvatar" class="w-8 h-8 rounded-full border border-gray-200 shadow-sm" alt="Avatar">
+                        <button onclick="logout()" class="text-sm text-gray-500 hover:text-red-500 transition px-2 py-1">登出</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 標籤過濾區 (登入後顯示) -->
+        <div id="tagContainerWrapper" class="hidden max-w-6xl mx-auto mt-4">
+            <div id="tagContainer" class="flex gap-2 overflow-x-auto no-scrollbar pb-2">
+                <!-- 標籤動態生成 -->
+            </div>
+        </div>
+    </header>
+
+    <!-- 主畫面區 -->
+    <main class="max-w-6xl mx-auto px-4 py-8 md:px-8">
+        
+        <!-- 未登入提示畫面 -->
+        <div id="loginPrompt" class="flex flex-col items-center justify-center py-20 text-gray-400">
+            <i class="fa-solid fa-cloud-arrow-up text-6xl mb-4 text-indigo-200"></i>
+            <h2 class="text-xl font-bold text-gray-700 mb-2">歡迎來到您的數位藝廊</h2>
+            <p class="text-sm">請使用上方 Google 帳號登入，開始同步您的珍貴收藏。</p>
+        </div>
+
+        <!-- 登入後內容區 -->
+        <div id="appContent" class="hidden">
+            <div id="emptyState" class="hidden flex flex-col items-center justify-center py-20 text-gray-400">
+                <i class="fa-solid fa-folder-open text-6xl mb-4 text-gray-300"></i>
+                <p class="text-lg">目前沒有符合的收藏，趕快新增一個吧！</p>
+            </div>
+            
+            <div id="gridContainer" class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 md:gap-6">
+                <!-- 卡片動態生成 -->
+            </div>
+        </div>
+    </main>
+
+    <!-- 新增/編輯 收藏品的彈出視窗 (Modal) -->
+    <div id="itemModal" class="fixed inset-0 bg-black bg-opacity-50 z-50 hidden flex items-center justify-center p-4">
+        <div class="bg-white rounded-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto shadow-2xl transform transition-all">
+            <div class="p-6">
+                <div class="flex justify-between items-center mb-6">
+                    <h2 id="modalTitle" class="text-2xl font-bold text-gray-900">新增收藏品</h2>
+                    <button onclick="closeModal()" class="text-gray-400 hover:text-gray-600 transition">
+                        <i class="fa-solid fa-times text-xl"></i>
+                    </button>
+                </div>
+
+                <form id="itemForm" onsubmit="saveItem(event)" class="space-y-4">
+                    <input type="hidden" id="itemId">
+                    <input type="hidden" id="existingImage">
+
+                    <!-- 圖片上傳區 (使用 Base64 壓縮) -->
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">照片 (必填)</label>
+                        <div class="flex items-center justify-center w-full">
+                            <label id="imageUploadLabel" class="flex flex-col items-center justify-center w-full h-48 border-2 border-gray-300 border-dashed rounded-lg cursor-pointer bg-gray-50 hover:bg-gray-100 relative overflow-hidden">
+                                <div class="flex flex-col items-center justify-center pt-5 pb-6 text-gray-500" id="uploadPlaceholder">
+                                    <i class="fa-solid fa-cloud-arrow-up text-3xl mb-2"></i>
+                                    <p class="mb-2 text-sm"><span class="font-semibold">點擊上傳</span> 或拖曳圖片至此</p>
+                                </div>
+                                <img id="imagePreview" class="absolute inset-0 w-full h-full object-cover hidden">
+                                <input id="itemImage" type="file" accept="image/*" class="hidden" onchange="previewImage(event)" />
+                            </label>
+                        </div>
+                        <p id="imageError" class="text-red-500 text-xs mt-1 hidden">請上傳圖片！</p>
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">物品名稱 (必填)</label>
+                            <input type="text" id="itemName" required class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">品牌 / 團體</label>
+                            <input type="text" id="itemBrand" placeholder="例如: Nike, Twice" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">購買日期</label>
+                            <input type="date" id="itemDate" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">入手價格</label>
+                            <input type="number" id="itemPrice" placeholder="例如: 3500" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                        </div>
+                    </div>
+
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">標籤 (用逗號隔開)</label>
+                        <input type="text" id="itemTags" placeholder="例如: 限量, 親簽, 2023" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                    </div>
+
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">備註說明</label>
+                        <textarea id="itemNotes" rows="3" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500"></textarea>
+                    </div>
+
+                    <div class="pt-4 flex justify-end gap-3 border-t">
+                        <button type="button" onclick="closeModal()" class="px-4 py-2 text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-md transition">取消</button>
+                        <button type="submit" id="submitBtn" class="px-4 py-2 text-white bg-indigo-600 hover:bg-indigo-700 rounded-md transition">儲存</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- Firebase 模組化邏輯 -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/12.12.1/firebase-app.js";
+        import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/12.12.1/firebase-auth.js";
+        import { getFirestore, collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot } from "https://www.gstatic.com/firebasejs/12.12.1/firebase-firestore.js";
+
+        // 客戶提供的 Firebase 設定檔
+        const firebaseConfig = {
+            apiKey: "AIzaSyDpbyb-MAoZlZEnYQN1efHho9V70qNn-Ts",
+            authDomain: "collect-a1985.firebaseapp.com",
+            projectId: "collect-a1985",
+            storageBucket: "collect-a1985.firebasestorage.app",
+            messagingSenderId: "746260247088",
+            appId: "1:746260247088:web:5c23bf17f7f991073473f5"
+        };
+
+        // 初始化 Firebase
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        const provider = new GoogleAuthProvider();
+
+        // 狀態管理
+        let collections = [];
+        let activeTag = '全部';
+        let currentCompressedImage = null;
+        let currentUser = null;
+        let unsubscribeSnapshot = null;
+
+        // 監聽搜尋輸入
+        document.getElementById('searchInput').addEventListener('input', () => {
+            renderGrid();
+        });
+
+        // ==========================================
+        // 1. Google 帳號認證邏輯
+        // ==========================================
+        window.login = async () => {
+            try {
+                await signInWithPopup(auth, provider);
+            } catch (error) {
+                console.error("登入失敗:", error);
+                alert("登入失敗，請檢查網路狀態或重新嘗試。");
+            }
+        };
+
+        window.logout = async () => {
+            try {
+                await signOut(auth);
+            } catch (error) {
+                console.error("登出失敗:", error);
+            }
+        };
+
+        onAuthStateChanged(auth, (user) => {
+            if (user) {
+                // 已登入：顯示個人資訊與應用程式內容
+                currentUser = user;
+                document.getElementById('loginBtn').classList.add('hidden');
+                document.getElementById('userInfo').classList.remove('hidden');
+                document.getElementById('userAvatar').src = user.photoURL || 'https://via.placeholder.com/150';
+                
+                document.getElementById('loginPrompt').classList.add('hidden');
+                document.getElementById('appContent').classList.remove('hidden');
+                document.getElementById('appControls').classList.remove('hidden');
+                document.getElementById('tagContainerWrapper').classList.remove('hidden');
+                
+                // 載入該使用者的雲端資料庫
+                loadCollections();
+            } else {
+                // 登出：隱藏應用程式內容，顯示登入提示
+                currentUser = null;
+                collections = [];
+                if (unsubscribeSnapshot) unsubscribeSnapshot(); // 停止監聽舊資料
+                
+                document.getElementById('loginBtn').classList.remove('hidden');
+                document.getElementById('userInfo').classList.add('hidden');
+                
+                document.getElementById('loginPrompt').classList.remove('hidden');
+                document.getElementById('appContent').classList.add('hidden');
+                document.getElementById('appControls').classList.add('hidden');
+                document.getElementById('tagContainerWrapper').classList.add('hidden');
+            }
+        });
+
+        // ==========================================
+        // 2. Firestore 資料庫即時連線邏輯
+        // ==========================================
+        function loadCollections() {
+            if (!currentUser) return;
+            const itemsRef = collection(db, 'users', currentUser.uid, 'items');
+            
+            // onSnapshot 會自動即時同步資料庫的所有變更
+            unsubscribeSnapshot = onSnapshot(itemsRef, (snapshot) => {
+                collections = [];
+                snapshot.forEach((doc) => {
+                    collections.push({ id: doc.id, ...doc.data() });
+                });
+                
+                // 依照建立時間排序 (最新的在最前面)
+                collections.sort((a, b) => b.timestamp - a.timestamp);
+                renderApp();
+            }, (error) => {
+                console.error("讀取資料失敗:", error);
+            });
+        }
+
+        // ==========================================
+        // 3. UI 渲染邏輯
+        // ==========================================
+        function renderApp() {
+            renderTags();
+            renderGrid();
+        }
+
+        function renderTags() {
+            const tagContainer = document.getElementById('tagContainer');
+            let allTags = new Set();
+            collections.forEach(item => {
+                if (item.tags) item.tags.forEach(tag => allTags.add(tag));
+            });
+
+            // 防錯機制：如果某個標籤的物品被刪光了，自動切回「全部」
+            if (activeTag !== '全部' && !allTags.has(activeTag)) {
+                activeTag = '全部';
+            }
+
+            const tagsArray = ['全部', ...Array.from(allTags)];
+            tagContainer.innerHTML = '';
+            
+            tagsArray.forEach(tag => {
+                const btn = document.createElement('button');
+                btn.innerText = tag;
+                btn.className = `px-4 py-1.5 rounded-full text-sm font-medium whitespace-nowrap transition border ${
+                    activeTag === tag 
+                    ? 'bg-gray-800 text-white border-gray-800 shadow-md' 
+                    : 'bg-white text-gray-600 border-gray-200 hover:border-gray-300 hover:bg-gray-50'
+                }`;
+                btn.onclick = () => {
+                    activeTag = tag;
+                    renderTags();
+                    renderGrid();
+                };
+                tagContainer.appendChild(btn);
+            });
+        }
+
+        function renderGrid() {
+            const gridContainer = document.getElementById('gridContainer');
+            const emptyState = document.getElementById('emptyState');
+            const searchQuery = document.getElementById('searchInput').value.toLowerCase();
+
+            const filteredItems = collections.filter(item => {
+                const matchTag = activeTag === '全部' || (item.tags && item.tags.includes(activeTag));
+                const matchSearch = item.name.toLowerCase().includes(searchQuery) || 
+                                    (item.brand && item.brand.toLowerCase().includes(searchQuery));
+                return matchTag && matchSearch;
+            });
+
+            gridContainer.innerHTML = '';
+
+            if (filteredItems.length === 0) {
+                emptyState.classList.remove('hidden');
+                gridContainer.classList.add('hidden');
+            } else {
+                emptyState.classList.add('hidden');
+                gridContainer.classList.remove('hidden');
+
+                filteredItems.forEach(item => {
+                    const card = document.createElement('div');
+                    card.className = 'flip-card aspect-square';
+                    card.onclick = function() { this.classList.toggle('flipped'); };
+
+                    const tagsHtml = item.tags ? item.tags.map(t => `<span class="inline-block bg-gray-100 text-gray-600 text-[10px] px-2 py-1 rounded mb-1 mr-1">#${t}</span>`).join('') : '';
+                    const priceText = item.price ? `$${Number(item.price).toLocaleString()}` : '未定';
+
+                    card.innerHTML = `
+                        <div class="flip-card-inner">
+                            <div class="flip-card-front group">
+                                <img src="${item.image}" alt="${item.name}" loading="lazy">
+                                <div class="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-20 transition flex justify-end p-2 items-start">
+                                    <i class="fa-solid fa-rotate text-white opacity-0 group-hover:opacity-100 drop-shadow-md"></i>
+                                </div>
+                            </div>
+                            <div class="flip-card-back relative overflow-y-auto no-scrollbar">
+                                <div class="flex-grow">
+                                    <div class="text-[10px] text-indigo-600 font-semibold uppercase tracking-wider mb-1">${item.brand || '未分類'}</div>
+                                    <h3 class="font-bold text-gray-900 text-sm md:text-base leading-tight mb-2">${item.name}</h3>
+                                    
+                                    <div class="text-[11px] md:text-xs text-gray-600 space-y-1 mb-3">
+                                        ${item.date ? `<p><i class="fa-regular fa-calendar mr-1 w-3"></i> ${item.date}</p>` : ''}
+                                        <p><i class="fa-solid fa-tag mr-1 w-3"></i> ${priceText}</p>
+                                    </div>
+                                    ${item.notes ? `<p class="text-xs text-gray-500 mb-3 line-clamp-3 md:line-clamp-none">${item.notes}</p>` : ''}
+                                    <div class="flex flex-wrap mt-auto">${tagsHtml}</div>
+                                </div>
+                                
+                                <div class="mt-3 pt-3 border-t border-gray-100 flex justify-end gap-2">
+                                    <button onclick="editItem('${item.id}', event)" class="w-7 h-7 rounded-full bg-gray-100 hover:bg-indigo-100 hover:text-indigo-600 text-gray-500 flex items-center justify-center transition" title="編輯">
+                                        <i class="fa-solid fa-pen text-[10px]"></i>
+                                    </button>
+                                    <button onclick="deleteItem('${item.id}', event)" class="w-7 h-7 rounded-full bg-gray-100 hover:bg-red-100 hover:text-red-600 text-gray-500 flex items-center justify-center transition" title="刪除">
+                                        <i class="fa-solid fa-trash text-[10px]"></i>
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                    gridContainer.appendChild(card);
+                });
+            }
+        }
+
+        // ==========================================
+        // 4. 表單與圖片壓縮操作
+        // ==========================================
+        window.previewImage = (event) => {
+            const file = event.target.files[0];
+            const errorMsg = document.getElementById('imageError');
+            if (file) {
+                errorMsg.classList.add('hidden');
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    const img = new Image();
+                    img.onload = function() {
+                        const canvas = document.createElement('canvas');
+                        const MAX_WIDTH = 800;
+                        let width = img.width;
+                        let height = img.height;
+
+                        if (width > MAX_WIDTH) {
+                            height = Math.floor(height * (MAX_WIDTH / width));
+                            width = MAX_WIDTH;
+                        }
+
+                        canvas.width = width;
+                        canvas.height = height;
+                        const ctx = canvas.getContext('2d');
+                        ctx.drawImage(img, 0, 0, width, height);
+
+                        // 壓縮為 JPEG, 品質 0.7，確保容量小於 Firestore 的 1MB 限制
+                        currentCompressedImage = canvas.toDataURL('image/jpeg', 0.7);
+
+                        const preview = document.getElementById('imagePreview');
+                        const placeholder = document.getElementById('uploadPlaceholder');
+                        preview.src = currentCompressedImage;
+                        preview.classList.remove('hidden');
+                        placeholder.classList.add('hidden');
+                    }
+                    img.src = e.target.result;
+                }
+                reader.readAsDataURL(file);
+            }
+        };
+
+        window.openModal = () => {
+            document.getElementById('itemModal').classList.remove('hidden');
+            document.body.style.overflow = 'hidden';
+        };
+
+        window.closeModal = () => {
+            document.getElementById('itemModal').classList.add('hidden');
+            document.body.style.overflow = 'auto';
+            document.getElementById('itemForm').reset();
+            document.getElementById('itemId').value = '';
+            document.getElementById('existingImage').value = '';
+            currentCompressedImage = null;
+            document.getElementById('modalTitle').innerText = '新增收藏品';
+            document.getElementById('imagePreview').classList.add('hidden');
+            document.getElementById('imagePreview').src = '';
+            document.getElementById('uploadPlaceholder').classList.remove('hidden');
+            document.getElementById('imageError').classList.add('hidden');
+        };
+
+        // 儲存至 Firestore
+        window.saveItem = async (event) => {
+            event.preventDefault();
+            if (!currentUser) return alert("請先登入！");
+
+            const id = document.getElementById('itemId').value;
+            const existingImage = document.getElementById('existingImage').value;
+            let finalImage = currentCompressedImage || existingImage;
+            
+            if (!finalImage) {
+                document.getElementById('imageError').classList.remove('hidden');
+                return;
+            }
+
+            const tagsArray = document.getElementById('itemTags').value
+                                     .split(',')
+                                     .map(tag => tag.trim())
+                                     .filter(tag => tag.length > 0);
+
+            const itemData = {
+                name: document.getElementById('itemName').value,
+                brand: document.getElementById('itemBrand').value,
+                date: document.getElementById('itemDate').value,
+                price: document.getElementById('itemPrice').value,
+                notes: document.getElementById('itemNotes').value,
+                tags: tagsArray,
+                image: finalImage,
+                timestamp: id ? collections.find(i => i.id === id).timestamp : Date.now()
+            };
+
+            const submitBtn = document.getElementById('submitBtn');
+            const originalText = submitBtn.innerText;
+            submitBtn.innerText = '儲存中...';
+            submitBtn.disabled = true;
+
+            try {
+                if (id) {
+                    await updateDoc(doc(db, 'users', currentUser.uid, 'items', id), itemData);
+                } else {
+                    await addDoc(collection(db, 'users', currentUser.uid, 'items'), itemData);
+                }
+                window.closeModal(); // 存檔成功後，onSnapshot會自動抓取新資料並渲染
+            } catch (error) {
+                console.error("儲存失敗:", error);
+                alert('儲存失敗，請檢查權限或網路。');
+            } finally {
+                submitBtn.innerText = originalText;
+                submitBtn.disabled = false;
+            }
+        };
+
+        window.editItem = (id, event) => {
+            event.stopPropagation();
+            const item = collections.find(i => i.id === id);
+            if (!item) return;
+
+            document.getElementById('modalTitle').innerText = '編輯收藏品';
+            document.getElementById('itemId').value = item.id;
+            document.getElementById('itemName').value = item.name;
+            document.getElementById('itemBrand').value = item.brand || '';
+            document.getElementById('itemDate').value = item.date || '';
+            document.getElementById('itemPrice').value = item.price || '';
+            document.getElementById('itemNotes').value = item.notes || '';
+            document.getElementById('itemTags').value = item.tags ? item.tags.join(', ') : '';
+            
+            document.getElementById('existingImage').value = item.image;
+            const preview = document.getElementById('imagePreview');
+            preview.src = item.image;
+            preview.classList.remove('hidden');
+            document.getElementById('uploadPlaceholder').classList.add('hidden');
+            
+            currentCompressedImage = null;
+            window.openModal();
+        };
+
+        window.deleteItem = async (id, event) => {
+            event.stopPropagation();
+            if (!currentUser) return;
+
+            if (confirm('確定要刪除這個收藏品嗎？這個動作無法復原喔！')) {
+                try {
+                    await deleteDoc(doc(db, 'users', currentUser.uid, 'items', id));
+                    // 刪除成功後，onSnapshot會自動抓取新資料並渲染
+                } catch (error) {
+                    console.error("刪除失敗:", error);
+                    alert('刪除失敗');
+                }
+            }
+        };
+    </script>
+</body>
+</html>

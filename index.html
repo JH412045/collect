@@ -1,1 +1,12 @@
-jbjvhvhjvbgjgkcvyfcgycgyuvhiobhibvfctyuo;pbcvtcyi
+rules_version = '2';
+service cloud.firestore {
+match /databases/{database}/documents {
+
+// 將使用者的資料存放於 /users/{userId}/items/{itemId} 的路徑下
+match /users/{userId}/items/{itemId} {
+  // 安全規則：只有當使用者已經登入 (request.auth != null)，
+  // 且該使用者的 UID 與目錄的 userId 相符時，才允許讀取與寫入資料。
+  allow read, write: if request.auth != null && request.auth.uid == userId;
+         }
+       }
+    }
